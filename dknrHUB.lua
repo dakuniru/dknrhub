@@ -1,196 +1,142 @@
-local UIS = game:GetService("UserInputService")
-local RS = game:GetService("RunService")
-local Players = game:GetService("Players")
-local Camera = workspace.CurrentCamera
-local LocalPlayer = Players.LocalPlayer
+local UIS,RS,Players,Camera,LP = game:GetService("UserInputService"),game:GetService("RunService"),game:GetService("Players"),workspace.CurrentCamera,game:GetService("Players").LocalPlayer
+local AimbotEnabled,ESPEnabled,dragging,dragOffset = false,false,false,Vector2.new()
+local FOV,Smoothness,MaxDistance,LockPart = 70,3,500,"Head"
+local mmr = mousemoverel or (Input and Input.MouseMove)
 
-local AimbotEnabled = false
-local ESPEnabled = false
-local dragging = false
-local dragOffset = Vector2.new()
-
--- Aimbot設定
-local FOV = 70
-local Smoothness = 3
-local LockPart = "Head"
-local MaxDistance = 500
-
-local mousemoverel = mousemoverel or (Input and Input.MouseMove)
-
--- UI構築
-local window = Drawing.new("Square")
-window.Size = Vector2.new(220, 120)
-window.Position = Vector2.new(100, 100)
-window.Color = Color3.fromRGB(25, 25, 25)
-window.Filled = true
-window.Transparency = 0.85
-window.Visible = true
-
-local title = Drawing.new("Text")
-title.Text = "dknrHUB"
-title.Size = 20
-title.Position = window.Position + Vector2.new(10, 8)
-title.Color = Color3.fromRGB(255, 255, 255)
-title.Outline = true
-title.Visible = true
-
-local function createButton(text, offsetY)
-    local btn = Drawing.new("Text")
-    btn.Text = text
-    btn.Size = 16
-    btn.Position = window.Position + Vector2.new(15, offsetY)
-    btn.Color = Color3.fromRGB(180, 180, 180)
-    btn.Outline = true
-    btn.Visible = true
-    return btn
+-- HSV→RGB
+local function HSV(h)
+    local s,v=1,1
+    local i=math.floor(h*6)
+    local f=h*6-i
+    local p,q,t=v*(1-s),v*(1-f*s),v*(1-(1-f)*s)
+    i=i%6
+    local r,g,b=({v,q,p,p,t,v})[i+1],({t,v,v,q,p,p})[i+1],({p,p,t,v,v,q})[i+1]
+    return Color3.fromRGB(r*255,g*255,b*255)
 end
 
-local aimbotBtn = createButton("[Aimbot: OFF]", 40)
-local espBtn = createButton("[ESP: OFF]", 70)
-
-local function hoverEffect(btn, active, mouse)
-    local hovered = (mouse.X >= btn.Position.X and mouse.X <= btn.Position.X + btn.Text:len() * 8) and
-                    (mouse.Y >= btn.Position.Y and mouse.Y <= btn.Position.Y + btn.Size)
-    btn.Color = active and Color3.fromRGB(0, 255, 100) or (hovered and Color3.fromRGB(255, 255, 100) or Color3.fromRGB(180, 180, 180))
+-- GUI
+local win=Drawing.new("Square")
+win.Size,win.Position,win.Color,win.Filled,win.Transparency,win.Visible = Vector2.new(200,80),Vector2.new(100,100),Color3.fromRGB(30,30,30),true,0.85,true
+local ttl=Drawing.new("Text")
+ttl.Text,ttl.Size,ttl.Position,ttl.Color,ttl.Outline,ttl.Visible = "dknrHUB",20,win.Position+Vector2.new(10,5),Color3.fromRGB(255,255,255),true,true
+local function btn(t,y)
+    local b=Drawing.new("Text")
+    b.Text,b.Size,b.Position,b.Color,b.Outline,b.Visible = t,16,win.Position+Vector2.new(15,y),Color3.fromRGB(180,180,180),true,true
+    return b
+end
+local ab,eb = btn("[Aimbot: OFF]",30),btn("[ESP: OFF]",50)
+local function hov(b,a,m)
+    local w,h=b.Text:len()*8,b.Size
+    local p=b.Position
+    local over=m.X>=p.X and m.X<=p.X+w and m.Y>=p.Y and m.Y<=p.Y+h
+    b.Color = a and Color3.fromRGB(0,255,100) or (over and Color3.fromRGB(255,255,100) or Color3.fromRGB(180,180,180))
+end
+local function ins(m,b)
+    local w,h=b.Text:len()*8,b.Size
+    local p=b.Position
+    return m.X>=p.X and m.X<=p.X+w and m.Y>=p.Y and m.Y<=p.Y+h
 end
 
-local function isInsideButton(mouse, btn)
-    local width = btn.Text:len() * 8
-    local height = btn.Size
-    local pos = btn.Position
-    return mouse.X >= pos.X and mouse.X <= pos.X + width and
-           mouse.Y >= pos.Y and mouse.Y <= pos.Y + height
-end
-
--- Aimbot（FOV＋距離＋生存チェック＋スムージング）
-local function runAimbot()
-    local closest, distance = nil, math.huge
-    local mouse = UIS:GetMouseLocation()
-
-    for _, v in pairs(Players:GetPlayers()) do
-        if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild(LockPart) then
-            local humanoid = v.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid and humanoid.Health > 0 then
-                local head = v.Character[LockPart]
-                local pos = Camera:WorldToViewportPoint(head.Position)
-                local dist = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
-                local range = (Camera.CFrame.Position - head.Position).Magnitude
-
-                if pos.Z > 0 and dist < distance and dist < FOV and range <= MaxDistance then
-                    distance = dist
-                    closest = pos
+-- Aimbot
+local function runAim()
+    local closest,dist=nil,math.huge
+    local m=UIS:GetMouseLocation()
+    for _,v in pairs(Players:GetPlayers()) do
+        if v~=LP and v.Character and v.Character:FindFirstChild(LockPart) then
+            local hum=v.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health>0 then
+                local head=v.Character[LockPart]
+                local pos=Camera:WorldToViewportPoint(head.Position)
+                local d=(Vector2.new(pos.X,pos.Y)-m).Magnitude
+                local r=(Camera.CFrame.Position-head.Position).Magnitude
+                if pos.Z>0 and d<dist and d<FOV and r<=MaxDistance then
+                    dist,closest=d,pos
                 end
             end
         end
     end
-
-    if closest and mousemoverel then
-        local dx = (closest.X - mouse.X) / Smoothness
-        local dy = (closest.Y - mouse.Y) / Smoothness
-        mousemoverel(dx, dy)
-    end
+    if closest and mmr then mmr((closest.X-m.X)/Smoothness,(closest.Y-m.Y)/Smoothness) end
 end
 
--- Box型ESP（カメラ正面に固定）
-local activeESP = {}
-
-local function clearESP()
-    for _, obj in pairs(activeESP) do
-        if obj.Remove then obj:Remove() end
+-- ESP（虹色Box・描画再利用）
+local lines={}
+local function clearAllESP()
+    for _, tbl in pairs(lines) do
+        for _, l in ipairs(tbl) do
+            l.Visible = false
+        end
     end
-    activeESP = {}
 end
 
 local function runESP()
-    clearESP()
-
-    for _, v in pairs(Players:GetPlayers()) do
-        if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") then
-            local humanoid = v.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid and humanoid.Health > 0 then
-                local root = v.Character.HumanoidRootPart
-                local center = root.Position
-                local up = Vector3.new(0, 3, 0)
-                local right = Camera.CFrame.RightVector * 2
-
-                local tl = Camera:WorldToViewportPoint(center + up - right)
-                local tr = Camera:WorldToViewportPoint(center + up + right)
-                local bl = Camera:WorldToViewportPoint(center - up - right)
-                local br = Camera:WorldToViewportPoint(center - up + right)
-
-                if tl.Z > 0 and tr.Z > 0 and bl.Z > 0 and br.Z > 0 then
-                    local lines = {}
-                    local function drawLine(p1, p2)
-                        local line = Drawing.new("Line")
-                        line.From = Vector2.new(p1.X, p1.Y)
-                        line.To = Vector2.new(p2.X, p2.Y)
-                        line.Color = Color3.fromRGB(255, 0, 0)
-                        line.Thickness = 2
-                        line.Visible = true
-                        table.insert(lines, line)
+    local col=HSV((tick()%5)/5)
+    for _,v in pairs(Players:GetPlayers()) do
+        if v~=LP and v.Character and v.Character:FindFirstChild("HumanoidRootPart") then
+            local hum=v.Character:FindFirstChildOfClass("Humanoid")
+            local root=v.Character.HumanoidRootPart
+            if hum and hum.Health>0 then
+                local c=root.Position
+                local up=Vector3.new(0,3,0)
+                local rt=Camera.CFrame.RightVector*2
+                local tl,tr,bl,br=Camera:WorldToViewportPoint(c+up-rt),Camera:WorldToViewportPoint(c+up+rt),Camera:WorldToViewportPoint(c-up-rt),Camera:WorldToViewportPoint(c-up+rt)
+                if tl.Z>0 and tr.Z>0 and bl.Z>0 and br.Z>0 then
+                    if not lines[v] then
+                        lines[v]={}
+                        for i=1,4 do
+                            local l=Drawing.new("Line")
+                            l.Thickness=2
+                            l.Visible=true
+                            table.insert(lines[v],l)
+                        end
                     end
-
-                    drawLine(tl, tr)
-                    drawLine(tr, br)
-                    drawLine(br, bl)
-                    drawLine(bl, tl)
-
-                    for _, l in pairs(lines) do
-                        table.insert(activeESP, l)
-                    end
+                    local L=lines[v]
+                    L[1].From,L[1].To=Vector2.new(tl.X,tl.Y),Vector2.new(tr.X,tr.Y)
+                    L[2].From,L[2].To=Vector2.new(tr.X,tr.Y),Vector2.new(br.X,br.Y)
+                    L[3].From,L[3].To=Vector2.new(br.X,br.Y),Vector2.new(bl.X,bl.Y)
+                    L[4].From,L[4].To=Vector2.new(bl.X,bl.Y),Vector2.new(tl.X,tl.Y)
+                    for _,l in ipairs(L) do l.Color=col;l.Visible=true end
+                else
+                    if lines[v] then for _,l in ipairs(lines[v]) do l.Visible=false end end
                 end
+            else
+                if lines[v] then for _,l in ipairs(lines[v]) do l.Visible=false end end
             end
+        else
+            if lines[v] then for _,l in ipairs(lines[v]) do l.Visible=false end end
         end
     end
 end
 
--- クリック処理
-UIS.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        local mouse = UIS:GetMouseLocation()
-
-        if (mouse.X > window.Position.X and mouse.X < window.Position.X + window.Size.X) and
-           (mouse.Y > window.Position.Y and mouse.Y < window.Position.Y + 25) then
-            dragging = true
-            dragOffset = mouse - window.Position
-            return
+-- クリック
+UIS.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+        local m=UIS:GetMouseLocation()
+        if m.X>win.Position.X and m.X<win.Position.X+win.Size.X and m.Y>win.Position.Y and m.Y<win.Position.Y+25 then
+            dragging=true;dragOffset=m-win.Position;return
         end
-
-        if isInsideButton(mouse, aimbotBtn) then
-            AimbotEnabled = not AimbotEnabled
-            aimbotBtn.Text = "[Aimbot: " .. (AimbotEnabled and "ON" or "OFF") .. "]"
-            return
-        end
-
-        if isInsideButton(mouse, espBtn) then
-            ESPEnabled = not ESPEnabled
-            espBtn.Text = "[ESP: " .. (ESPEnabled and "ON" or "OFF") .. "]"
-            if not ESPEnabled then clearESP() end
-            return
+        if ins(m,ab) then
+            AimbotEnabled=not AimbotEnabled
+            ab.Text="[Aimbot: "..(AimbotEnabled and"ON"or"OFF").."]"
+        elseif ins(m,eb) then
+            ESPEnabled=not ESPEnabled
+            eb.Text="[ESP: "..(ESPEnabled and"ON"or"OFF").."]"
+            if not ESPEnabled then clearAllESP() end -- OFF時に即消去
         end
     end
 end)
-
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end)
+UIS.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end end)
 
 -- メインループ
 RS.RenderStepped:Connect(function()
-    local mouse = UIS:GetMouseLocation()
-
+    local m=UIS:GetMouseLocation()
     if dragging then
-        window.Position = mouse - dragOffset
-        title.Position = window.Position + Vector2.new(10, 8)
-        aimbotBtn.Position = window.Position + Vector2.new(15, 40)
-        espBtn.Position = window.Position + Vector2.new(15, 70)
+        win.Position=m-dragOffset
+        ttl.Position=win.Position+Vector2.new(10,5)
+        ab.Position=win.Position+Vector2.new(15,30)
+        eb.Position=win.Position+Vector2.new(15,50)
     end
-
-    hoverEffect(aimbotBtn, AimbotEnabled, mouse)
-    hoverEffect(espBtn, ESPEnabled, mouse)
-
-    if AimbotEnabled then runAimbot() end
+    hov(ab,AimbotEnabled,m)
+    hov(eb,ESPEnabled,m)
+    if AimbotEnabled then runAim() end
     if ESPEnabled then runESP() end
 end)
